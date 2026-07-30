@@ -1,8 +1,7 @@
-#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <string>
+#include <cerrno>
 
 extern "C" {
 #include "driver/gpio.h"
@@ -11,6 +10,7 @@ extern "C" {
 #include "esp_eth_mac.h"
 #include "esp_eth_netif_glue.h"
 #include "esp_eth_phy.h"
+#include "esp_eth_phy_lan87xx.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -55,7 +55,6 @@ struct Config {
     uint16_t mav_local_port = 14550;
     uint16_t mav_remote_port = 14550;
     uint32_t mav_baud = 115200;
-    uint16_t mav_idle_gap_us = 1500;
 };
 
 struct Counters {
@@ -91,17 +90,13 @@ uint8_t crc8_dvb_s2(const uint8_t *data, size_t len) {
 
 void nvs_get_string(nvs_handle_t handle, const char *key, char *dst, size_t dst_len) {
     size_t required = 0;
-    if (nvs_get_str(handle, key, nullptr, &required) != ESP_OK || required == 0 || required > dst_len) {
-        return;
-    }
+    if (nvs_get_str(handle, key, nullptr, &required) != ESP_OK || required == 0 || required > dst_len) return;
     (void)nvs_get_str(handle, key, dst, &required);
 }
 
 void load_config() {
     nvs_handle_t handle;
-    if (nvs_open("openflyip", NVS_READONLY, &handle) != ESP_OK) {
-        return;
-    }
+    if (nvs_open("openflyip", NVS_READONLY, &handle) != ESP_OK) return;
 
     uint8_t value8 = 0;
     if (nvs_get_u8(handle, "dhcp", &value8) == ESP_OK) cfg.dhcp = value8 != 0;
@@ -117,14 +112,13 @@ void load_config() {
     (void)nvs_get_u16(handle, "mlp", &cfg.mav_local_port);
     (void)nvs_get_u16(handle, "mrp", &cfg.mav_remote_port);
     (void)nvs_get_u32(handle, "mbaud", &cfg.mav_baud);
-    (void)nvs_get_u16(handle, "mgap", &cfg.mav_idle_gap_us);
     nvs_close(handle);
 }
 
 int make_udp_socket(uint16_t port) {
     const int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (sock < 0) {
-        ESP_LOGE(TAG, "socket() failed: errno=%d", errno);
+        ESP_LOGE(TAG, "socket failed: errno=%d", errno);
         return -1;
     }
 
@@ -142,7 +136,6 @@ int make_udp_socket(uint16_t port) {
     }
 
     timeval timeout{};
-    timeout.tv_sec = 0;
     timeout.tv_usec = 1000;
     (void)setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     return sock;
@@ -150,16 +143,11 @@ int make_udp_socket(uint16_t port) {
 
 bool send_udp(int sock, const uint8_t *data, size_t len, uint16_t port) {
     if (sock < 0 || data == nullptr || len == 0) return false;
-
     sockaddr_in peer{};
     peer.sin_family = AF_INET;
     peer.sin_port = htons(port);
-    if (inet_pton(AF_INET, cfg.peer_ip, &peer.sin_addr) != 1) {
-        return false;
-    }
-
-    const int sent = sendto(sock, data, len, 0, reinterpret_cast<sockaddr *>(&peer), sizeof(peer));
-    return sent == static_cast<int>(len);
+    if (inet_pton(AF_INET, cfg.peer_ip, &peer.sin_addr) != 1) return false;
+    return sendto(sock, data, len, 0, reinterpret_cast<sockaddr *>(&peer), sizeof(peer)) == static_cast<int>(len);
 }
 
 void init_uart() {
@@ -188,9 +176,7 @@ void crsf_write_single_wire(const uint8_t *data, size_t len) {
     (void)uart_flush_input(CRSF_UART);
     ESP_ERROR_CHECK(gpio_set_direction(CRSF_PIN, GPIO_MODE_OUTPUT));
     const int written = uart_write_bytes(CRSF_UART, data, len);
-    if (written > 0) {
-        (void)uart_wait_tx_done(CRSF_UART, pdMS_TO_TICKS(20));
-    }
+    if (written > 0) (void)uart_wait_tx_done(CRSF_UART, pdMS_TO_TICKS(20));
     esp_rom_delay_us(cfg.crsf_turnaround_us);
     ESP_ERROR_CHECK(gpio_set_direction(CRSF_PIN, GPIO_MODE_INPUT));
     (void)uart_flush_input(CRSF_UART);
@@ -214,32 +200,25 @@ void crsf_task(void *) {
                 frame[pos++] = byte;
                 expected = static_cast<size_t>(byte) + 2U;
                 if (expected < 4U || expected > CRSF_MAX_FRAME) {
-                    pos = 0;
-                    expected = 0;
+                    pos = expected = 0;
                     ++stats.crsf_drops;
                 }
                 continue;
             }
-
             if (pos >= sizeof(frame)) {
-                pos = 0;
-                expected = 0;
+                pos = expected = 0;
                 ++stats.crsf_drops;
                 continue;
             }
-
             frame[pos++] = byte;
             if (expected != 0U && pos == expected) {
                 if (crc8_dvb_s2(frame + 2, expected - 3U) == frame[expected - 1U]) {
-                    if (eth_connected && crsf_socket >= 0) {
-                        (void)send_udp(crsf_socket, frame, expected, cfg.crsf_remote_port);
-                    }
+                    if (eth_connected && crsf_socket >= 0) (void)send_udp(crsf_socket, frame, expected, cfg.crsf_remote_port);
                     ++stats.crsf_uart_frames;
                 } else {
                     ++stats.crsf_crc_errors;
                 }
-                pos = 0;
-                expected = 0;
+                pos = expected = 0;
             }
         }
 
@@ -267,11 +246,8 @@ void mavlink_task(void *) {
         const int count = uart_read_bytes(MAV_UART, buffer, sizeof(buffer), pdMS_TO_TICKS(2));
         if (count > 0) {
             stats.mav_uart_bytes += static_cast<uint32_t>(count);
-            if (eth_connected && mav_socket >= 0) {
-                (void)send_udp(mav_socket, buffer, static_cast<size_t>(count), cfg.mav_remote_port);
-            }
+            if (eth_connected && mav_socket >= 0) (void)send_udp(mav_socket, buffer, static_cast<size_t>(count), cfg.mav_remote_port);
         }
-
         if (mav_socket >= 0) {
             sockaddr_in source{};
             socklen_t source_len = sizeof(source);
@@ -289,44 +265,31 @@ esp_err_t status_handler(httpd_req_t *req) {
     char ip[16] = "0.0.0.0";
     if (eth_netif != nullptr) {
         esp_netif_ip_info_t info{};
-        if (esp_netif_get_ip_info(eth_netif, &info) == ESP_OK) {
-            snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
-        }
+        if (esp_netif_get_ip_info(eth_netif, &info) == ESP_OK) snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
     }
-
     char json[384]{};
     snprintf(json, sizeof(json),
              "{\"ethernet\":%s,\"ip\":\"%s\",\"crsf_uart_frames\":%lu,\"crsf_udp_frames\":%lu,\"crsf_crc_errors\":%lu,\"crsf_drops\":%lu,\"mav_uart_bytes\":%lu,\"mav_udp_bytes\":%lu}",
              eth_connected ? "true" : "false", ip,
-             static_cast<unsigned long>(stats.crsf_uart_frames),
-             static_cast<unsigned long>(stats.crsf_udp_frames),
-             static_cast<unsigned long>(stats.crsf_crc_errors),
-             static_cast<unsigned long>(stats.crsf_drops),
-             static_cast<unsigned long>(stats.mav_uart_bytes),
-             static_cast<unsigned long>(stats.mav_udp_bytes));
+             static_cast<unsigned long>(stats.crsf_uart_frames), static_cast<unsigned long>(stats.crsf_udp_frames),
+             static_cast<unsigned long>(stats.crsf_crc_errors), static_cast<unsigned long>(stats.crsf_drops),
+             static_cast<unsigned long>(stats.mav_uart_bytes), static_cast<unsigned long>(stats.mav_udp_bytes));
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, json);
 }
 
 esp_err_t root_handler(httpd_req_t *req) {
     static constexpr char HTML[] =
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>OpenFlyIP</title></head><body>"
-        "<h1>OpenFlyIP ESP-IDF</h1>"
-        "<p>WT32-ETH01 CRSF single-wire + MAVLink UDP bridge.</p>"
-        "<p><a href='/status'>JSON status</a></p></body></html>";
+        "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>OpenFlyIP</title></head><body><h1>OpenFlyIP ESP-IDF</h1>"
+        "<p>WT32-ETH01 CRSF single-wire + MAVLink UDP bridge.</p><p><a href='/status'>JSON status</a></p></body></html>";
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, HTML, HTTPD_RESP_USE_STRLEN);
 }
 
 void start_http_server() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    const esp_err_t result = httpd_start(&http_server, &config);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP server start failed: %s", esp_err_to_name(result));
-        return;
-    }
+    if (httpd_start(&http_server, &config) != ESP_OK) return;
 
     httpd_uri_t root{};
     root.uri = "/";
@@ -351,17 +314,21 @@ void got_ip_handler(void *, esp_event_base_t, int32_t, void *event_data) {
 }
 
 void eth_event_handler(void *, esp_event_base_t, int32_t event_id, void *) {
-    if (event_id == ETHERNET_EVENT_DISCONNECTED || event_id == ETHERNET_EVENT_STOP) {
-        eth_connected = false;
-    }
+    if (event_id == ETHERNET_EVENT_DISCONNECTED || event_id == ETHERNET_EVENT_STOP) eth_connected = false;
+}
+
+bool parse_ipv4(const char *text, esp_ip4_addr_t *out) {
+    if (text == nullptr || out == nullptr) return false;
+    in_addr parsed{};
+    if (inet_pton(AF_INET, text, &parsed) != 1) return false;
+    out->addr = parsed.s_addr;
+    return true;
 }
 
 void init_ethernet() {
     gpio_config_t power_config{};
     power_config.pin_bit_mask = 1ULL << static_cast<unsigned>(ETH_PHY_POWER);
     power_config.mode = GPIO_MODE_OUTPUT;
-    power_config.pull_up_en = GPIO_PULLUP_DISABLE;
-    power_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
     power_config.intr_type = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK(gpio_config(&power_config));
     ESP_ERROR_CHECK(gpio_set_level(ETH_PHY_POWER, 1));
@@ -369,10 +336,7 @@ void init_ethernet() {
 
     esp_netif_config_t netif_config = ESP_NETIF_DEFAULT_ETH();
     eth_netif = esp_netif_new(&netif_config);
-    if (eth_netif == nullptr) {
-        ESP_LOGE(TAG, "esp_netif_new failed");
-        abort();
-    }
+    if (eth_netif == nullptr) abort();
 
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
     eth_esp32_emac_config_t emac_config = ETH_ESP32_EMAC_DEFAULT_CONFIG();
@@ -383,17 +347,13 @@ void init_ethernet() {
     emac_config.clock_config.rmii.clock_gpio = EMAC_CLK_IN_GPIO;
 
     esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&emac_config, &mac_config);
-    if (mac == nullptr) {
-        ESP_LOGE(TAG, "esp_eth_mac_new_esp32 failed");
-        abort();
-    }
+    if (mac == nullptr) abort();
 
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
     phy_config.phy_addr = ETH_PHY_ADDR;
     phy_config.reset_gpio_num = -1;
     esp_eth_phy_t *phy = esp_eth_phy_new_lan87xx(&phy_config);
     if (phy == nullptr) {
-        ESP_LOGE(TAG, "esp_eth_phy_new_lan87xx failed");
         mac->del(mac);
         abort();
     }
@@ -402,22 +362,19 @@ void init_ethernet() {
     ESP_ERROR_CHECK(esp_eth_driver_install(&ethernet_config, &eth_handle));
 
     eth_glue = esp_eth_new_netif_glue(eth_handle);
-    if (eth_glue == nullptr) {
-        ESP_LOGE(TAG, "esp_eth_new_netif_glue failed");
-        abort();
-    }
+    if (eth_glue == nullptr) abort();
     ESP_ERROR_CHECK(esp_netif_attach(eth_netif, eth_glue));
 
     if (!cfg.dhcp) {
-        esp_err_t stop_result = esp_netif_dhcpc_stop(eth_netif);
-        if (stop_result != ESP_OK && stop_result != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
-            ESP_ERROR_CHECK(stop_result);
-        }
+        const esp_err_t stopped = esp_netif_dhcpc_stop(eth_netif);
+        if (stopped != ESP_OK && stopped != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) ESP_ERROR_CHECK(stopped);
 
         esp_netif_ip_info_t info{};
-        ESP_ERROR_CHECK(esp_netif_str_to_ip4(cfg.local_ip, &info.ip));
-        ESP_ERROR_CHECK(esp_netif_str_to_ip4(cfg.gateway, &info.gw));
-        ESP_ERROR_CHECK(esp_netif_str_to_ip4(cfg.netmask, &info.netmask));
+        if (!parse_ipv4(cfg.local_ip, &info.ip) || !parse_ipv4(cfg.gateway, &info.gw) ||
+            !parse_ipv4(cfg.netmask, &info.netmask)) {
+            ESP_LOGE(TAG, "Invalid static IPv4 configuration");
+            abort();
+        }
         ESP_ERROR_CHECK(esp_netif_set_ip_info(eth_netif, &info));
     }
 
@@ -428,12 +385,12 @@ void init_ethernet() {
 }  // namespace
 
 extern "C" void app_main(void) {
-    esp_err_t nvs_result = nvs_flash_init();
-    if (nvs_result == ESP_ERR_NVS_NO_FREE_PAGES || nvs_result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    esp_err_t result = nvs_flash_init();
+    if (result == ESP_ERR_NVS_NO_FREE_PAGES || result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
-        nvs_result = nvs_flash_init();
+        result = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(nvs_result);
+    ESP_ERROR_CHECK(result);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
@@ -442,12 +399,8 @@ extern "C" void app_main(void) {
     init_ethernet();
     start_http_server();
 
-    BaseType_t crsf_task_result = xTaskCreatePinnedToCore(crsf_task, "crsf", 4096, nullptr, 12, nullptr, 1);
-    BaseType_t mav_task_result = xTaskCreatePinnedToCore(mavlink_task, "mavlink", 4096, nullptr, 10, nullptr, 0);
-    if (crsf_task_result != pdPASS || mav_task_result != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create bridge tasks");
-        abort();
-    }
+    if (xTaskCreatePinnedToCore(crsf_task, "crsf", 4096, nullptr, 12, nullptr, 1) != pdPASS) abort();
+    if (xTaskCreatePinnedToCore(mavlink_task, "mavlink", 4096, nullptr, 10, nullptr, 0) != pdPASS) abort();
 
     ESP_LOGI(TAG, "OpenFlyIP ESP-IDF started");
 }
