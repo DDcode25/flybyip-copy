@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -10,7 +11,6 @@ extern "C" {
 #include "esp_eth_mac.h"
 #include "esp_eth_netif_glue.h"
 #include "esp_eth_phy.h"
-#include "esp_eth_phy_lan87xx.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -58,17 +58,17 @@ struct Config {
 };
 
 struct Counters {
-    volatile uint32_t crsf_uart_frames = 0;
-    volatile uint32_t crsf_udp_frames = 0;
-    volatile uint32_t crsf_crc_errors = 0;
-    volatile uint32_t crsf_drops = 0;
-    volatile uint32_t mav_uart_bytes = 0;
-    volatile uint32_t mav_udp_bytes = 0;
+    std::atomic<uint32_t> crsf_uart_frames{0};
+    std::atomic<uint32_t> crsf_udp_frames{0};
+    std::atomic<uint32_t> crsf_crc_errors{0};
+    std::atomic<uint32_t> crsf_drops{0};
+    std::atomic<uint32_t> mav_uart_bytes{0};
+    std::atomic<uint32_t> mav_udp_bytes{0};
 };
 
 Config cfg;
 Counters stats;
-volatile bool eth_connected = false;
+std::atomic<bool> eth_connected{false};
 int crsf_socket = -1;
 int mav_socket = -1;
 httpd_handle_t http_server = nullptr;
