@@ -5,5 +5,9 @@ CONFIG_LWIP_MAX_SOCKETS=12
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_ETH_ENABLED=y
 CONFIG_ETH_USE_ESP32_EMAC=y
-CONFIG_ETH_RMII_CLK_INPUT=y
-CONFIG_ETH_RMII_CLK_IN_GPIO=0
+
+# The RMII clock source and GPIO used to be Kconfig options
+# (CONFIG_ETH_RMII_CLK_INPUT / CONFIG_ETH_RMII_CLK_IN_GPIO). ESP-IDF 6.0
+# removed them -- both are now set at runtime in init_ethernet() via
+# clock_config.rmii.clock_mode and .clock_gpio. Leaving them here would be
+# silently ignored, which is worse than not having them.

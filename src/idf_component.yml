@@ -1,0 +1,6 @@
+## ESP-IDF 6.0 dropped the vendor PHY drivers from the esp_eth component --
+## it now ships only esp_eth_phy_new_generic() -- so LAN8720 support comes
+## from the component registry. Not needed on IDF 5.x, where
+## esp_eth_phy_new_lan87xx() is declared in esp_eth_phy.h.
+dependencies:
+  espressif/lan87xx: "^1.1.0"

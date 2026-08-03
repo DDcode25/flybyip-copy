@@ -11,6 +11,7 @@ extern "C" {
 #include "esp_eth_mac.h"
 #include "esp_eth_netif_glue.h"
 #include "esp_eth_phy.h"
+#include "esp_eth_phy_lan87xx.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -33,6 +34,7 @@ constexpr gpio_num_t ETH_PHY_POWER = GPIO_NUM_16;
 constexpr gpio_num_t ETH_MDC = GPIO_NUM_23;
 constexpr gpio_num_t ETH_MDIO = GPIO_NUM_18;
 constexpr int ETH_PHY_ADDR = 1;
+constexpr int ETH_RMII_CLK_IN = 0;  // LAN8720 feeds the 50 MHz RMII clock into GPIO0
 constexpr gpio_num_t CRSF_PIN = GPIO_NUM_5;
 constexpr gpio_num_t MAV_RX_PIN = GPIO_NUM_35;
 constexpr gpio_num_t MAV_TX_PIN = GPIO_NUM_17;
@@ -344,7 +346,7 @@ void init_ethernet() {
     emac_config.smi_gpio.mdio_num = ETH_MDIO;
     emac_config.interface = EMAC_DATA_INTERFACE_RMII;
     emac_config.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN;
-    emac_config.clock_config.rmii.clock_gpio = EMAC_CLK_IN_GPIO;
+    emac_config.clock_config.rmii.clock_gpio = ETH_RMII_CLK_IN;
 
     esp_eth_mac_t *mac = esp_eth_mac_new_esp32(&emac_config, &mac_config);
     if (mac == nullptr) abort();
